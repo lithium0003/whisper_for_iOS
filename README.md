@@ -12,11 +12,6 @@ On iPhone13 Pro, model size over "medium" is too big for Neural Engine. So, you 
 ## convert model from pytorch to coreml
 As following to original document, install whisper.
 
-In coremltools conversion pytorch -> coreml, error happened here[https://github.com/openai/whisper/blob/5d8d3e75a4826fe5f01205d81c3017a805fc2bf9/whisper/model.py#L192],
-"numpy_t op not found".
-
-So, patched version whisper https://github.com/lithium0003/whisper available.
-
 Then, run this file,
 ``` bash
 python convert.py
