@@ -541,7 +541,7 @@ extension WhisperModel {
                     prob_nospeech = Double(tokenizer.getNoSpeechProb(logits: output.logitsShapedArray))
                 }
                 
-                let t = tokenizer.getLastToken(logits: output.logitsShapedArray)
+                let t = tokenizer.getLastToken(logits: output.logitsShapedArray, tokens: tokens)
                 if t == tokenizer.eot {
                     break
                 }

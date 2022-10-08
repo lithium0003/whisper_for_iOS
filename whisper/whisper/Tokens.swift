@@ -58,8 +58,8 @@ class Tokenizer {
     
     let eot = 50257
     let sot = 50258
-    let sot_translate = 50258
-    let sot_transcribe = 50259
+    let sot_translate = 50358
+    let sot_transcribe = 50359
     let sot_lm = 50360
     let sot_prev = 50361
     let no_speech = 50362
@@ -76,16 +76,7 @@ class Tokenizer {
          "mg", "as", "tt", "haw", "ln", "ha", "ba", "jw", "su"]
     
     
-    let language_tokens: [Int] =
-        [50259, 50260, 50261, 50262, 50263, 50264, 50265, 50266, 50267, 50268, 50269, 50270, 50271,
-         50272, 50273, 50274, 50275, 50276, 50277, 50278, 50279, 50280, 50281, 50282, 50283, 50284,
-         50285, 50286, 50287, 50288, 50289, 50290, 50291, 50292, 50293, 50294, 50295, 50296, 50297,
-         50298, 50299, 50300, 50301, 50302, 50303, 50304, 50305, 50306, 50307, 50308, 50309, 50310,
-         50311, 50312, 50313, 50314, 50315, 50316, 50317, 50318, 50319, 50320, 50321, 50322, 50323,
-         50324, 50325, 50326, 50327, 50328, 50329, 50330, 50331, 50332, 50333, 50334, 50335, 50336,
-         50337, 50338, 50339, 50340, 50341, 50342, 50343, 50344, 50345, 50346, 50347, 50348, 50349,
-         50350, 50351, 50352, 50353, 50354, 50355, 50356, 50357]
-    
+    let language_tokens: [Int] = Array(50259..<50358)
     func getLanguageToken(lang: String) -> Int {
         language_tokens[language_codes.firstIndex(of: lang) ?? 0]
     }
@@ -120,12 +111,61 @@ class Tokenizer {
             return exp(ptr[stride[1]*t_idx + no_speech]) / expsum
         }
     }
+
+    func ApplyTimestampRules(tokens: [Int], logits: [(offset: Int, element: Float)]) -> [(offset: Int, element: Float)] {
+        let ret = logits.filter({ $0.offset != no_timestamps })
+        var last_was_timestamp = false
+        var penultimate_was_timestamp = false
+        if tokens.count >= 1, tokens[tokens.count - 1] >= timestamp_begin {
+            last_was_timestamp = true
+        }
+        if tokens.count < 2 {
+            penultimate_was_timestamp = true
+        }
+        else if tokens[tokens.count - 2] >= timestamp_begin {
+            penultimate_was_timestamp = true
+        }
+        if last_was_timestamp {
+            if penultimate_was_timestamp {
+                return ret.filter({ $0.offset < timestamp_begin })
+            }
+            else {
+                return ret.filter({ $0.offset == eot })
+            }
+        }
+        return ret
+    }
     
-    func getLastToken(logits: MLShapedArray<Float>) -> Int {
+    func logsumexp(_ item: [Float]) -> Float {
+        let maxa = item.max() ?? -Float.infinity
+        return maxa + log(item.map({ exp($0 - maxa) }).reduce(0.0, +))
+    }
+    
+    func getLastToken(logits: MLShapedArray<Float>, tokens: [Int]) -> Int {
         logits.withUnsafeShapedBufferPointer { ptr, shape, stride in
             let last_token = shape[1] - 1
-            guard let max_logit = (0..<shape[2]).map({ ptr[stride[1]*last_token + $0] })
-                .enumerated().max(by: { $0.element < $1.element }) else {
+            var logits = (0..<shape[2]).map({ ptr[stride[1]*last_token + $0] })
+                .enumerated().map{ (offset: $0.offset, element: $0.element ) }
+            logits = ApplyTimestampRules(tokens: tokens, logits: logits)
+            
+            var expsum: Float = 0
+            for item in logits {
+                expsum += exp(item.element)
+            }
+            let logprobs = logits.map({ item in
+                (offset: item.offset, element: log(exp(item.element) / expsum))
+            })
+            
+            let timestamp_logprob = logsumexp(logprobs.filter({ $0.offset >= timestamp_begin }).map({ $0.element }))
+            let max_text_token_logprob = logprobs.filter({ $0.offset < timestamp_begin }).map({ $0.element }).max() ?? -Float.infinity
+            
+            if timestamp_logprob > max_text_token_logprob {
+                guard let max_logit = logits.filter({ $0.offset >= timestamp_begin }).max(by: { $0.element < $1.element }) else {
+                    return -1
+                }
+                return max_logit.offset
+            }
+            guard let max_logit = logits.max(by: { $0.element < $1.element }) else {
                 return -1
             }
             return max_logit.offset
