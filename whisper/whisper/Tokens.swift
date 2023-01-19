@@ -143,7 +143,7 @@ class Tokenizer {
     
     func getLastToken(logits: MLShapedArray<Float>, tokens: [Int]) -> Int {
         logits.withUnsafeShapedBufferPointer { ptr, shape, stride in
-            let last_token = shape[1] - 1
+            let last_token = tokens.count + 2
             var logits = (0..<shape[2]).map({ ptr[stride[1]*last_token + $0] })
                 .enumerated().map{ (offset: $0.offset, element: $0.element ) }
             logits = ApplyTimestampRules(tokens: tokens, logits: logits)

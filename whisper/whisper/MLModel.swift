@@ -490,7 +490,10 @@ extension WhisperModel {
             guard let soundoutput = try? encderModel.prediction(input: encoderInput(mel: mel)) else {
                 return
             }
-            let token = MLShapedArray(repeating: Int32(tokenizer.sot), shape: [1,1])
+            var token = MLShapedArray(repeating: Int32(0), shape: [1,448])
+            token.withUnsafeMutableShapedBufferPointer { ptr, shape, stride in
+                ptr[0] = Int32(tokenizer.sot)
+            }
             let input_decoder = decoderInput(tokens: token, audio_features: soundoutput.audio_featuresShapedArray)
             
             guard let output = try? decoderModel.prediction(input: input_decoder) else {
@@ -512,7 +515,6 @@ extension WhisperModel {
                     self.objectWillChange.send()
                 }
 
-                var token = MLShapedArray(repeating: Int32(0), shape: [1,3+i])
                 token.withUnsafeMutableShapedBufferPointer { ptr, shape, stride in
                     ptr[0] = Int32(tokenizer.sot)
                     if set_lang != "" {
@@ -531,21 +533,25 @@ extension WhisperModel {
                         ptr[j+3] = Int32(tokens[j])
                     }
                 }
-
-                let input_decoder = decoderInput(tokens: token, audio_features: soundoutput.audio_featuresShapedArray)
-
-                guard let output = try? decoderModel.prediction(input: input_decoder) else {
-                    return
-                }
-                if i == 0 {
-                    prob_nospeech = Double(tokenizer.getNoSpeechProb(logits: output.logitsShapedArray))
-                }
-                
-                let t = tokenizer.getLastToken(logits: output.logitsShapedArray, tokens: tokens)
-                if t == tokenizer.eot {
+                if !autoreleasepool(invoking: {
+                    let input_decoder = decoderInput(tokens: token, audio_features: soundoutput.audio_featuresShapedArray)
+                    
+                    guard let output = try? decoderModel.prediction(input: input_decoder) else {
+                        return false
+                    }
+                    if i == 0 {
+                        prob_nospeech = Double(tokenizer.getNoSpeechProb(logits: output.logitsShapedArray))
+                    }
+                    let t = tokenizer.getLastToken(logits: output.logitsShapedArray, tokens: tokens)
+                    if t == tokenizer.eot {
+                        return false
+                    }
+                    print(t)
+                    tokens.append(t)
+                    return true
+                }) {
                     break
                 }
-                tokens.append(t)
             }
             
             print(tokens)

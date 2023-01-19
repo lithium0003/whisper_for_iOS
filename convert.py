@@ -5,6 +5,7 @@ import coremltools as ct
 
 def convert_encoder(size="base"):
     model = whisper.load_model(size, device='cpu')
+    model.eval()
     print(model.dims)
 
     mel = np.ones([model.dims.n_mels,3000], dtype=np.float32) * -1.5
@@ -24,11 +25,12 @@ def convert_encoder(size="base"):
 
 def convert_decoder(size="base"):
     model = whisper.load_model(size, device='cpu')
+    model.eval()
     print(model.dims)
 
     audio_features = np.zeros([1,model.dims.n_audio_ctx,model.dims.n_audio_state], dtype=np.float32)
     audio_features = torch.from_numpy(audio_features)
-    input_shape = ct.Shape(shape=(1, ct.RangeDim(1, model.dims.n_text_ctx)))
+    input_shape = ct.Shape(shape=(1, model.dims.n_text_ctx))
     tokens = np.zeros([1,model.dims.n_text_ctx], dtype=np.int32)
     tokens = torch.from_numpy(tokens)
 
