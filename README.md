@@ -17,7 +17,7 @@ Then, run this file,
 python convert.py
 ```
 
-Successfully run, "encoder.mlpackage" and "decoder.mlpackage" will be generated.
+Successfully run, "encoder.mlpackage", "decoderinit.mlpackage" and "decoder.mlpackage" will be generated.
 Copy these dir to whisper/whisper folder.
 ``` bash
 cp -r *.mlpackage whisper/whisper/
