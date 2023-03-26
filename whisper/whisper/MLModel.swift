@@ -46,8 +46,13 @@ class WhisperModel: NSObject, ObservableObject {
             let config = MLModelConfiguration()
             config.computeUnits = .cpuAndNeuralEngine
             do {
+                print("encoder load")
                 encderModel = try await encoder.load(configuration: config)
+                print("decoderinit load")
+                decoderinitModel = try await decoderinit.load(configuration: config)
+                print("decoder load")
                 decoderModel = try await decoder.load(configuration: config)
+                print("load done")
                 DispatchQueue.main.async { [self] in
                     modelLoaded = true
                 }
@@ -60,6 +65,7 @@ class WhisperModel: NSObject, ObservableObject {
     
     var encderModel: encoder?
     var decoderModel: decoder?
+    var decoderinitModel: decoderinit?
     @Published var modelLoaded = false
     
     private enum SessionSetupResult {
@@ -473,6 +479,9 @@ extension WhisperModel {
             guard let encderModel = encderModel else {
                 return
             }
+            guard let decoderinitModel = decoderinitModel else {
+                return
+            }
             guard let decoderModel = decoderModel else {
                 return
             }
@@ -490,72 +499,84 @@ extension WhisperModel {
             guard let soundoutput = try? encderModel.prediction(input: encoderInput(mel: mel)) else {
                 return
             }
-            var token = MLShapedArray(repeating: Int32(0), shape: [1,448])
-            token.withUnsafeMutableShapedBufferPointer { ptr, shape, stride in
-                ptr[0] = Int32(tokenizer.sot)
-            }
-            let input_decoder = decoderInput(tokens: token, audio_features: soundoutput.audio_featuresShapedArray)
-            
-            guard let output = try? decoderModel.prediction(input: input_decoder) else {
+            guard let cache = try? decoderinitModel.prediction(input: decoderinitInput(audio_features: soundoutput.audio_features)) else {
                 return
             }
             
+            let n_layers = cache.cross_attn_kvcacheShapedArray.shape[0]
+            let n_state = cache.cross_attn_kvcacheShapedArray.shape[2]
+            var tokens = MLShapedArray(repeating: Int32(tokenizer.sot), shape: [1,1])
+            var offset = MLShapedArray(repeating: Int32(0), shape: [1])
+            var attn_kvcache = MLShapedArray(repeating: Float(0), shape: [n_layers,0,n_state])
+            let input_decoder = decoderInput(tokens: tokens, offset: offset, audio_features: soundoutput.audio_featuresShapedArray, cross_attn_kvcache: cache.cross_attn_kvcacheShapedArray, attn_kvcache: attn_kvcache)
+
+            guard let output = try? decoderModel.prediction(input: input_decoder) else {
+                return
+            }
+
             let prob = tokenizer.getProbLanguage(logits: output.logitsShapedArray)
             guard let lang = prob.sorted(by: {$0.value > $1.value}).first else {
                 return
             }
-            
+
             prob_lang = Double(lang.value)
             detect_lang = lang.key
-            var tokens: [Int] = []
-            
-            for i in 0..<440 {
+            var get_tokens: [Int] = []
+
+            var start_tokens = [tokenizer.sot]
+            if set_lang != "" {
+                start_tokens.append(tokenizer.getLanguageToken(lang: set_lang))
+            }
+            else {
+                start_tokens.append(tokenizer.getLanguageToken(lang: detect_lang))
+            }
+            if transcribe {
+                start_tokens.append(tokenizer.sot_transcribe)
+            }
+            else {
+                start_tokens.append(tokenizer.sot_translate)
+            }
+
+            for i in 0..<220 {
                 loop_count = i
+                if i < start_tokens.count {
+                    tokens = MLShapedArray(repeating: Int32(start_tokens[i]), shape: [1,1])
+                }
+                offset = MLShapedArray(repeating: Int32(i), shape: [1])
                 DispatchQueue.main.async {
                     self.objectWillChange.send()
                 }
 
-                token.withUnsafeMutableShapedBufferPointer { ptr, shape, stride in
-                    ptr[0] = Int32(tokenizer.sot)
-                    if set_lang != "" {
-                        ptr[1] = Int32(tokenizer.getLanguageToken(lang: set_lang))
-                    }
-                    else {
-                        ptr[1] = Int32(tokenizer.getLanguageToken(lang: detect_lang))
-                    }
-                    if transcribe {
-                        ptr[2] = Int32(tokenizer.sot_transcribe)
-                    }
-                    else {
-                        ptr[2] = Int32(tokenizer.sot_translate)
-                    }
-                    for j in 0..<i {
-                        ptr[j+3] = Int32(tokens[j])
+                let input_decoder = decoderInput(tokens: tokens, offset: offset, audio_features: soundoutput.audio_featuresShapedArray, cross_attn_kvcache: cache.cross_attn_kvcacheShapedArray, attn_kvcache: attn_kvcache)
+
+                guard let output = try? decoderModel.prediction(input: input_decoder) else {
+                    return
+                }
+                attn_kvcache = output.out_attn_kvcacheShapedArray
+                
+                if i == 0 {
+                    prob_nospeech = Double(tokenizer.getNoSpeechProb(logits: output.logitsShapedArray))
+                    print(prob_nospeech)
+                    if prob_nospeech > 0.6 {
+                        break
                     }
                 }
-                if !autoreleasepool(invoking: {
-                    let input_decoder = decoderInput(tokens: token, audio_features: soundoutput.audio_featuresShapedArray)
-                    
-                    guard let output = try? decoderModel.prediction(input: input_decoder) else {
-                        return false
-                    }
-                    if i == 0 {
-                        prob_nospeech = Double(tokenizer.getNoSpeechProb(logits: output.logitsShapedArray))
-                    }
-                    let t = tokenizer.getLastToken(logits: output.logitsShapedArray, tokens: tokens)
-                    if t == tokenizer.eot {
-                        return false
-                    }
-                    print(t)
-                    tokens.append(t)
-                    return true
-                }) {
+                if i < start_tokens.count - 1 {
+                    continue
+                }
+                
+                let t = tokenizer.getLastToken(logits: output.logitsShapedArray, tokens: get_tokens)
+                if t == tokenizer.eot {
                     break
                 }
+                tokens = MLShapedArray(repeating: Int32(t), shape: [1,1])
+                get_tokens.append(t)
             }
-            
-            print(tokens)
-            detect_string = tokenizer.decodeTokens(tokens: tokens)
+
+            print(get_tokens)
+            get_tokens = get_tokens.filter({ $0 < tokenizer.eot })
+            print(get_tokens)
+            detect_string = tokenizer.decodeTokens(tokens: get_tokens)
             
             DispatchQueue.main.async {
                 self.objectWillChange.send()
